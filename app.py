@@ -409,4 +409,305 @@ elif page == "My Subjects":
         options = {f'{r["name"]} (ID {r["id"]})': int(r["id"]) for _, r in subjects.iterrows()}
         selected_label = st.selectbox("Choose subject", list(options.keys()))
         sid = options[selected_label]
-        selected = subjects[subjects["id
+        selected = subjects[subjects["id"] == sid].iloc[0]
+        with st.form("edit_subject_form"):
+            ename = st.text_input("Name", value=selected["name"])
+            x, y, z = st.columns(3)
+            ediff = x.selectbox("Difficulty", ["Easy", "Medium", "Hard"], index=["Easy","Medium","Hard"].index(selected["difficulty"]))
+            epriority = y.selectbox("Priority", ["Low", "Medium", "High"], index=["Low","Medium","High"].index(selected["priority"]))
+            etopics = z.number_input("Topics", 1, 100, int(selected["topics"]))
+            save_edit = st.form_submit_button("💾 Update subject")
+        if save_edit:
+            try:
+                execute("UPDATE subjects SET name=?,difficulty=?,priority=?,topics=? WHERE id=?",
+                        (ename.strip(), ediff, epriority, int(etopics), sid))
+                execute("UPDATE plans SET subject_name=? WHERE subject_id=?", (ename.strip(), sid))
+                st.success("Subject updated.")
+                st.rerun()
+            except sqlite3.IntegrityError:
+                st.error("A subject with that name already exists.")
+        if st.button("🗑️ Delete selected subject", type="secondary"):
+            execute("DELETE FROM subjects WHERE id=?", (sid,))
+            st.success("Subject deleted. Existing timetable entries are kept as history.")
+            st.rerun()
+    else:
+        st.info("No subjects yet. Use the form above to add your first subject.")
+
+# ------------------------- SMART TIMETABLE -------------------------
+elif page == "Smart Timetable":
+    panel_title("Smart Timetable Generator", "🗓️")
+    subjects = get_subjects()
+    if subjects.empty:
+        st.warning("First add at least one subject in My Subjects.")
+    else:
+        with st.form("generate_plan_form"):
+            c1, c2 = st.columns(2)
+            exam_date = c1.date_input("Exam date", value=date.today() + timedelta(days=14), min_value=date.today())
+            hours = c2.slider("Study hours per day", 1, 12, 4)
+            days = st.multiselect("Available study days",
+                ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"],
+                default=["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"])
+            pause = st.select_slider("Break between sessions", options=[5,10,15,20], value=10)
+            generate = st.form_submit_button("✨ Generate my timetable", use_container_width=True)
+        if generate:
+            if not days:
+                st.error("Select at least one available day.")
+            else:
+                generated = make_plan(subjects, exam_date, hours, days, pause)
+                if not generated:
+                    st.warning("No study sessions found. Please check the date and selected days.")
+                else:
+                    with get_conn() as conn:
+                        conn.execute("DELETE FROM plans")
+                        for item in generated:
+                            sid_row = subjects[subjects["name"] == item["subject_name"]]
+                            sid = int(sid_row.iloc[0]["id"]) if not sid_row.empty else None
+                            conn.execute(
+                                "INSERT INTO plans(study_date,subject_id,subject_name,minutes,task,created_at) VALUES(?,?,?,?,?,?)",
+                                (item["study_date"], sid, item["subject_name"], item["minutes"],
+                                 item["task"], datetime.now().isoformat(timespec="seconds")))
+                    st.success(f"Timetable generated with {len(generated)} study sessions.")
+                    st.rerun()
+    plans = get_plans()
+    if not plans.empty:
+        st.markdown("#### Your timetable")
+        display = plans.copy()
+        display["Date"] = pd.to_datetime(display["study_date"]).dt.strftime("%d %b %Y")
+        display["Day"] = pd.to_datetime(display["study_date"]).dt.day_name()
+        display["Duration"] = display["minutes"].astype(str) + " min"
+        display["Status"] = display["completed"].map({1:"✅ Completed",0:"⏳ Pending"})
+        st.dataframe(display[["Date","Day","subject_name","Duration","task","Status"]].rename(
+            columns={"subject_name":"Subject","task":"Task"}), use_container_width=True, hide_index=True)
+        st.markdown("#### Mark sessions complete")
+        for _, row in plans.iterrows():
+            label = f'{pd.to_datetime(row["study_date"]).strftime("%d %b")} · {row["subject_name"]} · {row["minutes"]} min'
+            checked = st.checkbox(label, value=bool(row["completed"]), key=f'plan_done_{int(row["id"])}')
+            if checked != bool(row["completed"]):
+                execute("UPDATE plans SET completed=? WHERE id=?", (int(checked), int(row["id"])))
+                if checked:
+                    award_points(10)
+                else:
+                    set_setting("points", max(0, int(get_setting("points","0")) - 10))
+                st.rerun()
+        csv = display.to_csv(index=False).encode("utf-8")
+        st.download_button("⬇️ Download timetable CSV", csv, "study_timetable.csv", "text/csv")
+        if st.button("🧹 Clear and regenerate timetable"):
+            execute("DELETE FROM plans")
+            st.rerun()
+
+# ------------------------- DAILY TASKS -------------------------
+elif page == "Daily Tasks":
+    panel_title("Daily Task Manager", "✅")
+    with st.form("new_task_form", clear_on_submit=True):
+        title = st.text_input("Task title", placeholder="Complete Python loops assignment")
+        a, b = st.columns(2)
+        subject = a.text_input("Subject", placeholder="Python")
+        due = b.date_input("Due date", value=date.today())
+        add_task = st.form_submit_button("➕ Add task", use_container_width=True)
+    if add_task:
+        if not title.strip():
+            st.error("Task title cannot be empty.")
+        else:
+            execute("INSERT INTO tasks(title,subject,due_date,created_at) VALUES(?,?,?,?)",
+                    (title.strip(), subject.strip() or "General", due.isoformat(), datetime.now().isoformat(timespec="seconds")))
+            st.success("Task saved successfully.")
+            st.rerun()
+    tasks = get_tasks()
+    if not tasks.empty:
+        total = len(tasks)
+        done = int(tasks["completed"].sum())
+        st.progress(done/total, text=f"{done} of {total} tasks completed")
+        for _, task in tasks.iterrows():
+            c1, c2, c3 = st.columns([0.08, 0.72, 0.20])
+            checked = c1.checkbox(" ", value=bool(task["completed"]), key=f'task_{int(task["id"])}', label_visibility="collapsed")
+            text_style = "text-decoration:line-through;color:#8d9abd" if checked else "color:#f1f4ff"
+            c2.markdown(f'<div style="{text_style};font-weight:600">{task["title"]}</div><div class="small-muted">{task["subject"]} · Due {pd.to_datetime(task["due_date"]).strftime("%d %b %Y")}</div>', unsafe_allow_html=True)
+            if checked != bool(task["completed"]):
+                execute("UPDATE tasks SET completed=? WHERE id=?", (int(checked), int(task["id"])))
+                if checked: award_points(10)
+                else: set_setting("points", max(0, int(get_setting("points","0")) - 10))
+                st.rerun()
+            if c3.button("🗑️ Delete", key=f'del_task_{int(task["id"])}'):
+                execute("DELETE FROM tasks WHERE id=?", (int(task["id"]),))
+                st.rerun()
+            st.divider()
+    else:
+        st.info("No daily tasks yet. Add your first task above.")
+
+# ------------------------- TRACK PROGRESS -------------------------
+elif page == "Track Progress":
+    panel_title("Your Learning Progress", "📈")
+    plans = get_plans()
+    tasks = get_tasks()
+    total = len(plans) + len(tasks)
+    done = (int(plans["completed"].sum()) if not plans.empty else 0) + (int(tasks["completed"].sum()) if not tasks.empty else 0)
+    rate = done/total if total else 0
+    a,b,c = st.columns(3)
+    a.metric("Total study items", total)
+    b.metric("Completed", done)
+    c.metric("Completion rate", f"{rate*100:.1f}%")
+    st.progress(rate)
+    if not plans.empty:
+        st.markdown("#### Planned minutes by subject")
+        by_subject = plans.groupby("subject_name", as_index=False)["minutes"].sum()
+        fig = px.bar(by_subject, x="subject_name", y="minutes", color="subject_name", template="plotly_dark")
+        fig.update_layout(showlegend=False, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=350)
+        st.plotly_chart(fig, use_container_width=True)
+        status = plans.groupby("completed").size().reset_index(name="Sessions")
+        status["Status"] = status["completed"].map({0:"Pending",1:"Completed"})
+        pie = px.pie(status, names="Status", values="Sessions", hole=.58, template="plotly_dark")
+        pie.update_layout(paper_bgcolor="rgba(0,0,0,0)", height=320)
+        st.plotly_chart(pie, use_container_width=True)
+    else:
+        st.info("Your charts will appear after you generate a timetable.")
+
+# ------------------------- FOCUS TIMER -------------------------
+elif page == "Focus Timer":
+    panel_title("Pomodoro Focus Room", "🍅")
+    mode = st.radio("Choose timer", ["Focus · 25 min", "Short break · 5 min", "Long break · 15 min"], horizontal=True)
+    durations = {"Focus · 25 min":25, "Short break · 5 min":5, "Long break · 15 min":15}
+    duration = durations[mode] * 60
+    if "timer_end" not in st.session_state: st.session_state.timer_end = None
+    if "timer_mode" not in st.session_state: st.session_state.timer_mode = mode
+    if st.session_state.timer_mode != mode:
+        st.session_state.timer_end = None
+        st.session_state.timer_mode = mode
+    if "timer_paused" not in st.session_state: st.session_state.timer_paused = duration
+    if st.session_state.timer_end:
+        remaining = max(0, int(st.session_state.timer_end - time.time()))
+    else:
+        remaining = st.session_state.timer_paused if st.session_state.timer_paused != duration else duration
+    mm, ss = divmod(remaining, 60)
+    st.markdown(f"""
+    <div class="panel" style="text-align:center;padding:30px">
+      <div class="small-muted">YOUR FOCUS SESSION</div>
+      <div style="font-size:76px;font-weight:800;letter-spacing:3px;color:#a58cff">{mm:02d}:{ss:02d}</div>
+      <div style="color:#b8c8ef">{mode}</div>
+    </div>""", unsafe_allow_html=True)
+    x,y,z = st.columns(3)
+    if x.button("▶ Start / Resume", use_container_width=True):
+        if not st.session_state.timer_end:
+            st.session_state.timer_end = time.time() + remaining
+            st.rerun()
+    if y.button("⏸ Pause", use_container_width=True):
+        if st.session_state.timer_end:
+            st.session_state.timer_paused = max(0, int(st.session_state.timer_end-time.time()))
+            st.session_state.timer_end = None
+            st.rerun()
+    if z.button("↻ Reset", use_container_width=True):
+        st.session_state.timer_end = None
+        st.session_state.timer_paused = duration
+        st.rerun()
+    if st.session_state.timer_end:
+        if remaining <= 0:
+            st.session_state.timer_end = None
+            st.session_state.timer_paused = duration
+            if mode.startswith("Focus"):
+                execute("INSERT INTO focus_sessions(mode,minutes,completed_at) VALUES(?,?,?)",
+                        ("Focus",25,datetime.now().isoformat(timespec="seconds")))
+                award_points(15)
+            st.success("Session completed! Great work. 🎉")
+            st.rerun()
+        else:
+            st.info("Timer is running. The display refreshes every second.")
+            time.sleep(1)
+            st.rerun()
+    focus_count = query_df("SELECT COUNT(*) AS n FROM focus_sessions")
+    focus_minutes = query_df("SELECT COALESCE(SUM(minutes),0) AS n FROM focus_sessions")
+    a,b = st.columns(2)
+    a.metric("Completed focus sessions", int(focus_count.iloc[0]["n"]))
+    b.metric("Total focus time", f'{int(focus_minutes.iloc[0]["n"])} min')
+
+# ------------------------- STUDY ASSISTANT -------------------------
+elif page == "Study Assistant":
+    panel_title("Your Study Assistant", "🤖")
+    st.markdown('<div class="panel"><b>Hi! I am your Study Buddy.</b><br><span class="small-muted">Ask me about study plans, revision, Python, DBMS, AI/ML or focus techniques.</span></div>', unsafe_allow_html=True)
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = [
+            {"role":"assistant","content":"Hi! 👋 What are you studying today?"}
+        ]
+    for msg in st.session_state.chat_history:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+    prompt = st.chat_input("Ask anything about your studies...")
+    if prompt:
+        st.session_state.chat_history.append({"role":"user","content":prompt})
+        response = assistant_reply(prompt)
+        st.session_state.chat_history.append({"role":"assistant","content":response})
+        st.rerun()
+    st.markdown("#### Quick questions")
+    q1,q2,q3 = st.columns(3)
+    for col, q in zip([q1,q2,q3], ["Give me study tips", "Explain DBMS revision", "How do I learn Python?"]):
+        if col.button(q, use_container_width=True):
+            st.session_state.chat_history.append({"role":"user","content":q})
+            st.session_state.chat_history.append({"role":"assistant","content":assistant_reply(q)})
+            st.rerun()
+    st.caption("Note: This is a rule-based assistant. No external AI API is connected yet.")
+
+# ------------------------- ACHIEVEMENTS -------------------------
+elif page == "Achievements":
+    panel_title("Achievements & Rewards", "🏆")
+    points = int(get_setting("points","0"))
+    streak = int(get_setting("streak","0"))
+    plans = get_plans()
+    tasks = get_tasks()
+    completed = (int(plans["completed"].sum()) if not plans.empty else 0) + (int(tasks["completed"].sum()) if not tasks.empty else 0)
+    focus_count = int(query_df("SELECT COUNT(*) AS n FROM focus_sessions").iloc[0]["n"])
+    a,b,c = st.columns(3)
+    a.metric("⭐ Total points", points)
+    b.metric("🔥 Current streak", f"{streak} days")
+    c.metric("✅ Completed items", completed)
+    badges = [
+        ("🌟","Getting Started","Complete your first task", completed >= 1),
+        ("📘","Study Star","Complete 7 study items", completed >= 7),
+        ("🎯","Goal Getter","Earn 50 points", points >= 50),
+        ("👑","Top Student","Earn 100 points", points >= 100),
+        ("🍅","Focus Hero","Complete 5 focus sessions", focus_count >= 5),
+        ("🔥","Consistency King","Build a 7-day streak", streak >= 7)
+    ]
+    cols = st.columns(3)
+    for i,(emoji,title,desc,unlocked) in enumerate(badges):
+        with cols[i%3]:
+            st.markdown(f"""<div class="panel" style="text-align:center;min-height:155px">
+            <div style="font-size:38px">{emoji}</div><b>{title}</b><div class="small-muted">{desc}</div>
+            <div style="margin-top:10px;color:{'#50dfb1' if unlocked else '#f4bd55'};font-weight:700">{'UNLOCKED ✓' if unlocked else 'LOCKED 🔒'}</div>
+            </div>""", unsafe_allow_html=True)
+
+# ------------------------- SETTINGS -------------------------
+elif page == "Settings":
+    panel_title("Settings & Data", "⚙️")
+    st.info("Your subjects, timetable, tasks, points and focus sessions are saved in study_planner.db in the same folder as app.py.")
+    st.markdown("#### Student profile")
+    new_name = st.text_input("Display name", value=get_setting("student_name","Student"))
+    if st.button("Save profile"):
+        set_setting("student_name", new_name.strip() or "Student")
+        st.success("Profile saved.")
+        st.rerun()
+    st.markdown("#### Export your data")
+    subjects = get_subjects()
+    tasks = get_tasks()
+    plans = get_plans()
+    if not subjects.empty:
+        st.download_button("Download subjects CSV", subjects.to_csv(index=False).encode("utf-8"), "subjects.csv", "text/csv")
+    if not tasks.empty:
+        st.download_button("Download tasks CSV", tasks.to_csv(index=False).encode("utf-8"), "daily_tasks.csv", "text/csv")
+    if not plans.empty:
+        st.download_button("Download timetable CSV", plans.to_csv(index=False).encode("utf-8"), "timetable.csv", "text/csv")
+    st.markdown("---")
+    st.markdown("#### Danger zone")
+    st.warning("Reset permanently deletes all subjects, timetable entries, tasks, points and focus-session history.")
+    confirm = st.checkbox("I understand. Delete all project data.")
+    if st.button("Reset all data", disabled=not confirm):
+        with get_conn() as conn:
+            conn.executescript("DELETE FROM subjects; DELETE FROM plans; DELETE FROM tasks; DELETE FROM focus_sessions;")
+        set_setting("points","0")
+        set_setting("streak","0")
+        set_setting("last_done","")
+        st.success("All project data has been reset.")
+        st.rerun()
+
+st.markdown("---")
+st.markdown(
+    '<div style="text-align:center;color:#8192bd;font-size:12px">🎓 AI Study Planner Pro · Built with Python, Streamlit, Pandas, Plotly & SQLite</div>',
+    unsafe_allow_html=True
+)
