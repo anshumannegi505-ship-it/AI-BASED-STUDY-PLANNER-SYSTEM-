@@ -6,7 +6,7 @@ import time
 import random
 from datetime import date, datetime, timedelta
 from pathlib import Path
-import plotly.express as px
+# import plotly.express as p
 import plotly.graph_objects as go
 
 # =========================================================
