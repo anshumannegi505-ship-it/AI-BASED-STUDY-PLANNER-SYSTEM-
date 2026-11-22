@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import json
 import os
 import time
@@ -242,7 +241,7 @@ with tab1:
             day_filter = st.selectbox("Filter by Day:", ["All 7 Days"] + list(df_plan["Date"].unique()))
             filtered_df = df_plan if day_filter == "All 7 Days" else df_plan[df_plan["Date"] == day_filter]
             
-            st.dataframe(filtered_df, width="stretch", hide_index=True)
+            st.dataframe(filtered_df, use_container_width=True, hide_index=True)
             
             c_dl1, c_dl2 = st.columns(2)
             csv_data = df_plan.to_csv(index=False).encode("utf-8")
@@ -261,25 +260,18 @@ with tab2:
         
         df_subs = pd.DataFrame(db["subjects"])
         df_subs["Remaining"] = df_subs["Topics"] - df_subs["Completed"]
+        chart_df1 = df_subs.set_index("Subject")[["Completed", "Remaining"]]
         
         with col_chart1:
-            fig_bar = px.bar(
-                df_subs, x="Subject", y=["Completed", "Remaining"],
-                title="Syllabus Completion Status",
-                barmode="stack",
-                color_discrete_map={"Completed": "#10B981", "Remaining": "#EF4444"}
-            )
-            st.plotly_chart(fig_bar, width="stretch")
+            st.markdown("**📚 Syllabus Completion vs Remaining**")
+            st.bar_chart(chart_df1, color=["#10B981", "#EF4444"])
             
         with col_chart2:
+            st.markdown("**⏱️ Weekly Study Hours Allocated per Subject**")
             df_plan_chart = generate_ai_schedule(db["subjects"], daily_hours, today, burnout_mode)
             if not df_plan_chart.empty:
-                fig_pie = px.pie(
-                    df_plan_chart, names="Subject", values="Hours",
-                    title="Weekly Study Time Distribution (Hours)",
-                    hole=0.45
-                )
-                st.plotly_chart(fig_pie, width="stretch")
+                hours_by_sub = df_plan_chart.groupby("Subject")["Hours"].sum()
+                st.bar_chart(hours_by_sub, color="#38BDF8")
 
         st.subheader("🚨 Subject-Wise Exam Risk Analysis")
         risk_rows = []
@@ -295,7 +287,7 @@ with tab2:
                 "Required Speed": f"{round(pace, 2)} topics/day",
                 "AI Risk Status": status
             })
-        st.dataframe(pd.DataFrame(risk_rows), width="stretch", hide_index=True)
+        st.dataframe(pd.DataFrame(risk_rows), use_container_width=True, hide_index=True)
 
 # ================= TAB 3: POMODORO FOCUS ZONE =================
 with tab3:
