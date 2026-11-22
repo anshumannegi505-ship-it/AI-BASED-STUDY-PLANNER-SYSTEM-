@@ -27,13 +27,10 @@ st.markdown("""
         color: white !important;
         font-weight: bold;
     }
-    .risk-high { color: #F87171; font-weight: bold; }
-    .risk-med { color: #FBBF24; font-weight: bold; }
-    .risk-low { color: #34D399; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- DATABASE FUNCTIONS (Persistent Storage) ---
+# --- DATABASE FUNCTIONS (Persistent + Cloud Safe) ---
 def get_default_data():
     return {
         "xp": 150,
@@ -84,8 +81,11 @@ def load_data():
     return get_default_data()
 
 def save_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+    try:
+        with open(DATA_FILE, "w") as f:
+            json.dump(data, f, indent=4)
+    except Exception:
+        pass
 
 if "db" not in st.session_state:
     st.session_state.db = load_data()
@@ -96,17 +96,17 @@ db = st.session_state.db
 def calculate_risk(sub, today):
     rem = sub["Topics"] - sub["Completed"]
     if rem <= 0:
-        return "🟢 Completed", "risk-low", 0
+        return "🟢 Completed", 0.0
     exam_dt = datetime.strptime(sub["Exam Date"], "%Y-%m-%d").date()
     days_left = max((exam_dt - today).days, 1)
     pace_needed = rem / days_left
     
     if pace_needed > 1.2 or (days_left <= 5 and rem > 3):
-        return "🔴 High Risk", "risk-high", pace_needed
+        return "🔴 High Risk", pace_needed
     elif pace_needed > 0.6:
-        return "🟡 Moderate", "risk-med", pace_needed
+        return "🟡 Moderate", pace_needed
     else:
-        return "🟢 Safe Zone", "risk-low", pace_needed
+        return "🟢 Safe Zone", pace_needed
 
 def generate_ai_schedule(subjects, daily_hours, start_date, burnout_protection):
     schedule = []
@@ -168,7 +168,6 @@ def generate_ai_schedule(subjects, daily_hours, start_date, burnout_protection):
 with st.sidebar:
     st.title("🧠 AI Study OS")
     
-    # Gamification Stats
     level = (db["xp"] // 200) + 1
     st.markdown(f"### 🏆 Level {level} Scholar | 🔥 {db['streak']} Day Streak")
     st.progress((db["xp"] % 200) / 200)
@@ -243,7 +242,7 @@ with tab1:
             day_filter = st.selectbox("Filter by Day:", ["All 7 Days"] + list(df_plan["Date"].unique()))
             filtered_df = df_plan if day_filter == "All 7 Days" else df_plan[df_plan["Date"] == day_filter]
             
-            st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+            st.dataframe(filtered_df, width="stretch", hide_index=True)
             
             c_dl1, c_dl2 = st.columns(2)
             csv_data = df_plan.to_csv(index=False).encode("utf-8")
@@ -270,7 +269,7 @@ with tab2:
                 barmode="stack",
                 color_discrete_map={"Completed": "#10B981", "Remaining": "#EF4444"}
             )
-            st.plotly_chart(fig_bar, use_container_width=True)
+            st.plotly_chart(fig_bar, width="stretch")
             
         with col_chart2:
             df_plan_chart = generate_ai_schedule(db["subjects"], daily_hours, today, burnout_mode)
@@ -280,12 +279,12 @@ with tab2:
                     title="Weekly Study Time Distribution (Hours)",
                     hole=0.45
                 )
-                st.plotly_chart(fig_pie, use_container_width=True)
+                st.plotly_chart(fig_pie, width="stretch")
 
         st.subheader("🚨 Subject-Wise Exam Risk Analysis")
         risk_rows = []
         for s in db["subjects"]:
-            status, _, pace = calculate_risk(s, today)
+            status, pace = calculate_risk(s, today)
             exam_dt = datetime.strptime(s["Exam Date"], "%Y-%m-%d").date()
             d_left = max((exam_dt - today).days, 0)
             risk_rows.append({
@@ -296,7 +295,7 @@ with tab2:
                 "Required Speed": f"{round(pace, 2)} topics/day",
                 "AI Risk Status": status
             })
-        st.dataframe(pd.DataFrame(risk_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(risk_rows), width="stretch", hide_index=True)
 
 # ================= TAB 3: POMODORO FOCUS ZONE =================
 with tab3:
